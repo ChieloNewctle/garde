@@ -19,18 +19,20 @@ impl ToTokens for model::Validate {
         let ty = Type {
             is_transparent: self.is_transparent,
             kind: &self.kind,
+            options: &self.options,
         };
+        let crate_name = &self.options.crate_name;
 
         quote! {
-            impl #impl_generics ::garde::Validate for #ident #ty_generics #where_clause {
+            impl #impl_generics #crate_name::Validate for #ident #ty_generics #where_clause {
                 type Context = #context_ty ;
 
                 #[allow(clippy::needless_borrow)]
                 fn validate_into(
                     &self,
                     #context_ident: &Self::Context,
-                    mut __garde_path: &mut dyn FnMut() -> ::garde::Path,
-                    __garde_report: &mut ::garde::error::Report,
+                    mut __garde_path: &mut dyn FnMut() -> #crate_name::Path,
+                    __garde_report: &mut #crate_name::error::Report,
                 ) {
                     let __garde_user_ctx = &#context_ident;
 
@@ -45,6 +47,7 @@ impl ToTokens for model::Validate {
 struct Type<'a> {
     is_transparent: bool,
     kind: &'a model::ValidateKind,
+    options: &'a model::Options,
 }
 
 impl ToTokens for Type<'_> {
@@ -56,6 +59,7 @@ impl ToTokens for Type<'_> {
                 let validation = Variant {
                     is_transparent,
                     variant,
+                    options: self.options,
                 };
 
                 quote! {{
@@ -70,6 +74,7 @@ impl ToTokens for Type<'_> {
                         let validation = Variant {
                             is_transparent,
                             variant,
+                            options: self.options,
                         };
 
                         quote!(Self::#name #bindings => #validation)
@@ -92,6 +97,7 @@ impl ToTokens for Type<'_> {
 struct Variant<'a> {
     is_transparent: bool,
     variant: &'a model::ValidateVariant,
+    options: &'a model::Options,
 }
 
 impl ToTokens for Variant<'_> {
@@ -102,6 +108,7 @@ impl ToTokens for Variant<'_> {
                 let fields = Struct {
                     is_transparent,
                     fields,
+                    options: self.options,
                 };
                 quote! {{#fields}}
             }
@@ -109,6 +116,7 @@ impl ToTokens for Variant<'_> {
                 let fields = Tuple {
                     is_transparent,
                     fields,
+                    options: self.options,
                 };
                 quote! {{#fields}}
             }
@@ -120,20 +128,22 @@ impl ToTokens for Variant<'_> {
 struct Struct<'a> {
     is_transparent: bool,
     fields: &'a [(Ident, model::ValidateField)],
+    options: &'a model::Options,
 }
 
 impl ToTokens for Struct<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let crate_name = &self.options.crate_name;
         Fields::new(
             self.fields
                 .iter()
-                .map(|(key, field)| (Binding::Ident(key), field, key.to_string())),
+                .map(|(key, field)| (Binding::Ident(key), field, self.options, key.to_string())),
             |key, value| match self.is_transparent {
                 true => quote! {{
                     #value
                 }},
                 false => quote! {{
-                    let mut __garde_path = ::garde::util::nested_path!(__garde_path, #key);
+                    let mut __garde_path = #crate_name::util::nested_path!(__garde_path, #key);
                     #value
                 }},
             },
@@ -145,21 +155,23 @@ impl ToTokens for Struct<'_> {
 struct Tuple<'a> {
     is_transparent: bool,
     fields: &'a [model::ValidateField],
+    options: &'a model::Options,
 }
 
 impl ToTokens for Tuple<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let crate_name = &self.options.crate_name;
         Fields::new(
             self.fields
                 .iter()
                 .enumerate()
-                .map(|(index, field)| (Binding::Index(index), field, index)),
+                .map(|(index, field)| (Binding::Index(index), field, self.options, index)),
             |index, value| match self.is_transparent {
                 true => quote! {{
                     #value
                 }},
                 false => quote! {{
-                    let mut __garde_path = ::garde::util::nested_path!(__garde_path, #index);
+                    let mut __garde_path = #crate_name::util::nested_path!(__garde_path, #index);
                     #value
                 }},
             },
@@ -171,6 +183,7 @@ impl ToTokens for Tuple<'_> {
 struct Inner<'a> {
     rules_mod: &'a TokenStream2,
     rule_set: &'a model::RuleSet,
+    options: &'a model::Options,
 }
 
 impl ToTokens for Inner<'_> {
@@ -178,6 +191,7 @@ impl ToTokens for Inner<'_> {
         let Inner {
             rules_mod,
             rule_set,
+            options,
         } = self;
 
         let outer = match rule_set.has_top_level_rules() {
@@ -193,6 +207,7 @@ impl ToTokens for Inner<'_> {
         let inner = rule_set.inner.as_deref().map(|rule_set| Inner {
             rules_mod,
             rule_set,
+            options,
         });
 
         let value = match (outer, inner) {
@@ -207,11 +222,13 @@ impl ToTokens for Inner<'_> {
             (None, None) => return,
         };
 
+        let crate_name = &options.crate_name;
+
         quote! {
             #rules_mod::inner::apply(
                 &*__garde_binding,
                 |__garde_binding, __garde_inner_key| {
-                    let mut __garde_path = ::garde::util::nested_path!(__garde_path, __garde_inner_key);
+                    let mut __garde_path = #crate_name::util::nested_path!(__garde_path, __garde_inner_key);
                     #value
                 }
             );
@@ -352,7 +369,14 @@ impl<I, F> Fields<I, F> {
 
 impl<'a, I, F, Extra> ToTokens for Fields<I, F>
 where
-    I: Iterator<Item = (Binding<'a>, &'a model::ValidateField, Extra)> + 'a,
+    I: Iterator<
+            Item = (
+                Binding<'a>,
+                &'a model::ValidateField,
+                &'a model::Options,
+                Extra,
+            ),
+        > + 'a,
     F: Fn(Extra, TokenStream2) -> TokenStream2,
 {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
@@ -360,9 +384,10 @@ where
             Some(v) => v,
             None => return,
         };
-        let fields = fields.filter(|(_, field, _)| field.skip.is_none());
-        let default_rules_mod = quote!(::garde::rules);
-        for (binding, field, extra) in fields {
+        let fields = fields.filter(|(_, field, _, _)| field.skip.is_none());
+        for (binding, field, options, extra) in fields {
+            let crate_name = &options.crate_name;
+            let default_rules_mod = quote!(#crate_name::rules);
             let field_adapter = field
                 .adapter
                 .as_ref()
@@ -380,9 +405,10 @@ where
                 true => Some(quote! {{#rules}}),
                 false => None,
             };
+            let crate_name = &options.crate_name;
             let inner = match (&field.dive, &field.rule_set.inner) {
                 (Some((_, None)), None) => Some(quote! {
-                    ::garde::validate::Validate::validate_into(
+                    #crate_name::validate::Validate::validate_into(
                         &*__garde_binding,
                         __garde_user_ctx,
                         &mut __garde_path,
@@ -390,7 +416,7 @@ where
                     );
                 }),
                 (Some((_, Some(ctx))), None) => Some(quote! {
-                    ::garde::validate::Validate::validate_into(
+                    #crate_name::validate::Validate::validate_into(
                         &*__garde_binding,
                         &#ctx,
                         &mut __garde_path,
@@ -401,6 +427,7 @@ where
                     Inner {
                         rules_mod,
                         rule_set: inner,
+                        options,
                     }
                     .to_token_stream(),
                 ),
